@@ -283,7 +283,7 @@ Contributions are welcome.
 ---
 
 # License
-MIT License
+Apache License
 ---
 
 # Author
