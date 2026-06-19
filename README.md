@@ -1,4 +1,3 @@
-# Computer-Vision
 # VisionGuard AI - Advanced Real-Time Computer Vision Platform
 
 VisionGuard AI is an enterprise-grade computer vision platform designed for real-time object detection, facial recognition, behavioral analysis, safety monitoring, and intelligent video analytics.
@@ -188,7 +187,7 @@ Detects:
 ## Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/VisionGuardAI.git
+git clone https://github.com/Omarwael1357/VisionGuardAI.git
 cd VisionGuardAI
 ```
 
@@ -249,7 +248,6 @@ GET /api/events
 # Future Roadmap
 
 ## Version 2.0
-
 * Edge AI Deployment
 * Mobile Application
 * Drone Integration
@@ -266,7 +264,6 @@ GET /api/events
 ---
 
 # Security
-
 * End-to-End Encryption
 * Secure API Authentication
 * Role-Based Access Control
@@ -276,7 +273,6 @@ GET /api/events
 ---
 
 # Contributing
-
 Contributions are welcome.
 
 1. Fork repository
@@ -287,26 +283,13 @@ Contributions are welcome.
 ---
 
 # License
-
 MIT License
-
 ---
 
 # Author
-
-Omar Wael Mohamed
-
-Independent Researcher
-
-Artificial Intelligence Engineer
-
-Computer Vision Developer
-
-Cybersecurity Enthusiast
-
+Omar Wael Mohamed - Inventor | Researcher | Creator — Building scientific ideas that challenge logic & shape reality
 ---
 
 # Vision Statement
-
 Building the next generation of intelligent computer vision systems capable of understanding, analyzing, and interacting with the real world in real time.
 
