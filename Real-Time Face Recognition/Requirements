@@ -1,0 +1,19 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+# face_recognition requires cmake, dlib, and a C++ compiler.
+# On macOS:  brew install cmake dlib
+# On Ubuntu: sudo apt install cmake libopenblas-dev liblapack-dev
+face-recognition>=1.3.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# ── Optional: GPU-accelerated dlib (much faster CNN detection) ────────────────
+# Install CUDA, then: pip install dlib --no-binary dlib
+# (Uncomment if you have CUDA available)
+# dlib-cuda
+
+# ── Terminal UI ────────────────────────────────────────────────────────────────
+rich>=13.0.0
+
+# ── Dev / testing (optional) ──────────────────────────────────────────────────
+# pytest>=7.0
+# pytest-cov

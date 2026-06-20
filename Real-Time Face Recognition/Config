@@ -1,0 +1,48 @@
+"""
+Configuration management for the Face Recognition System.
+All settings are centralized here for easy tuning.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Tuple
+
+
+@dataclass
+class Config:
+    # ── Paths ────────────────────────────────────────────────────────────────
+    data_dir: Path = field(default_factory=lambda: Path("face_data"))
+    encodings_file: str = "encodings.pkl"
+    screenshots_dir: str = "screenshots"
+
+    # ── Camera ───────────────────────────────────────────────────────────────
+    camera_index: int = 0
+    frame_width: int = 1280
+    frame_height: int = 720
+    target_fps: int = 30
+
+    # ── Recognition Engine ───────────────────────────────────────────────────
+    # "hog" → fast (CPU-friendly)  |  "cnn" → accurate (needs GPU / dlib-cuda)
+    detection_model: str = "hog"
+    tolerance: float = 0.50          # 0.4 = strict, 0.6 = lenient
+    num_jitters: int = 1             # ↑ = more accurate but slower
+    upsample_times: int = 1          # ↑ = finds smaller faces, slower
+
+    # ── Performance ──────────────────────────────────────────────────────────
+    frame_skip: int = 2              # Process every Nth frame for recognition
+    scale_factor: float = 0.50       # Downscale for faster detection (0.25–1.0)
+
+    # ── Enrollment ───────────────────────────────────────────────────────────
+    enrollment_samples: int = 5
+    enrollment_countdown: int = 3
+
+    # ── UI Colors (BGR) ──────────────────────────────────────────────────────
+    COLOR_KNOWN_HIGH: Tuple[int, int, int] = (0, 220, 80)    # Green
+    COLOR_KNOWN_MED: Tuple[int, int, int]  = (0, 200, 220)   # Cyan
+    COLOR_UNKNOWN: Tuple[int, int, int]    = (30, 60, 240)    # Red-orange
+    COLOR_TEXT: Tuple[int, int, int]       = (255, 255, 255)  # White
+    COLOR_HUD: Tuple[int, int, int]        = (0, 180, 255)    # Gold
+
+    # ── Confidence Thresholds ────────────────────────────────────────────────
+    HIGH_CONFIDENCE: float = 0.80
+    MED_CONFIDENCE: float  = 0.65

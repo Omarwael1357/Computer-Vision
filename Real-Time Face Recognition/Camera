@@ -1,0 +1,84 @@
+"""
+Camera – thin wrapper around cv2.VideoCapture with context-manager support.
+"""
+
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Tuple
+
+import cv2
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+class Camera:
+    """Manages a webcam or video-file capture session."""
+
+    def __init__(
+        self,
+        index: int = 0,
+        width: int = 1280,
+        height: int = 720,
+        fps: int = 30,
+    ) -> None:
+        self.index = index
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self._cap: Optional[cv2.VideoCapture] = None
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def open(self) -> bool:
+        """Open the capture device. Returns True on success."""
+        self._cap = cv2.VideoCapture(self.index)
+        if not self._cap.isOpened():
+            logger.error("Cannot open camera index %d", self.index)
+            return False
+
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self._cap.set(cv2.CAP_PROP_FPS,          self.fps)
+
+        aw  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        ah  = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        afps = self._cap.get(cv2.CAP_PROP_FPS)
+        logger.info("Camera %d opened: %dx%d @ %.1f FPS", self.index, aw, ah, afps)
+        return True
+
+    def release(self) -> None:
+        if self._cap and self._cap.isOpened():
+            self._cap.release()
+            logger.info("Camera %d released.", self.index)
+
+    # ── Frame I/O ─────────────────────────────────────────────────────────────
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Read one frame. Returns (ok, frame)."""
+        if self._cap is None or not self._cap.isOpened():
+            return False, None
+        return self._cap.read()
+
+    # ── Utilities ────────────────────────────────────────────────────────────
+
+    def screenshot(self, frame: np.ndarray, dest: Path) -> Optional[Path]:
+        """Save *frame* as a JPEG in *dest* directory."""
+        dest.mkdir(parents=True, exist_ok=True)
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = dest / f"screenshot_{ts}.jpg"
+        if cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+            logger.info("Screenshot → %s", path)
+            return path
+        logger.error("Failed to save screenshot to %s", path)
+        return None
+
+    # ── Context manager ───────────────────────────────────────────────────────
+
+    def __enter__(self) -> "Camera":
+        self.open()
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.release()

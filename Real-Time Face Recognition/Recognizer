@@ -1,0 +1,258 @@
+"""
+FaceRecognizer – the core recognition engine.
+
+Responsibilities:
+  • Detect faces in a video frame (with optional downscaling for speed)
+  • Compare detected encodings against the database
+  • Annotate frames with styled bounding boxes and confidence labels
+  • Track FPS
+"""
+
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+import cv2
+import face_recognition
+import numpy as np
+
+from .config import Config
+from .database import FaceDatabase
+
+logger = logging.getLogger(__name__)
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class FaceMatch:
+    """Result for a single detected face."""
+    name: str                              # "Unknown" if not matched
+    confidence: float                      # 0.0 – 1.0
+    location: Tuple[int, int, int, int]    # (top, right, bottom, left) in px
+
+    @property
+    def is_known(self) -> bool:
+        return self.name != "Unknown"
+
+    @property
+    def label(self) -> str:
+        if self.is_known:
+            return f"{self.name}  {self.confidence:.0%}"
+        return "Unknown"
+
+    @property
+    def box(self) -> Tuple[int, int, int, int]:
+        """(left, top, right, bottom) for OpenCV drawing."""
+        top, right, bottom, left = self.location
+        return left, top, right, bottom
+
+
+# ── FPS counter ───────────────────────────────────────────────────────────────
+
+class FPSCounter:
+    def __init__(self, window: int = 40) -> None:
+        self._ts: deque = deque(maxlen=window)
+
+    def tick(self) -> None:
+        self._ts.append(time.perf_counter())
+
+    @property
+    def fps(self) -> float:
+        if len(self._ts) < 2:
+            return 0.0
+        return (len(self._ts) - 1) / (self._ts[-1] - self._ts[0])
+
+
+# ── Main recognizer ───────────────────────────────────────────────────────────
+
+class FaceRecognizer:
+    """Stateful recognizer: caches last results and skips frames for speed."""
+
+    def __init__(self, config: Config, database: FaceDatabase) -> None:
+        self.config = config
+        self.database = database
+        self._fps = FPSCounter()
+        self._frame_idx: int = 0
+        self._cached: List[FaceMatch] = []
+
+        logger.info(
+            "FaceRecognizer ready  model=%s  tolerance=%.2f  scale=%.2f",
+            config.detection_model, config.tolerance, config.scale_factor,
+        )
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, List[FaceMatch]]:
+        """
+        Detect / recognise faces, annotate, and return (annotated_frame, matches).
+        Runs recognition only every `frame_skip` frames for performance.
+        """
+        self._fps.tick()
+        self._frame_idx += 1
+
+        if self._frame_idx % self.config.frame_skip == 0:
+            self._cached = self._run_recognition(frame)
+
+        annotated = self._draw(frame.copy(), self._cached)
+        annotated = self._draw_hud(annotated)
+        return annotated, self._cached
+
+    def encode_from_frame(self, frame: np.ndarray) -> Optional[List[np.ndarray]]:
+        """Return face encodings found in a single frame (for enrollment)."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        locations = face_recognition.face_locations(rgb, model=self.config.detection_model)
+        if not locations:
+            return None
+        return face_recognition.face_encodings(
+            rgb, locations, num_jitters=self.config.num_jitters
+        )
+
+    def encode_from_file(self, path: str) -> Optional[List[np.ndarray]]:
+        """Return face encodings found in an image file."""
+        try:
+            img = face_recognition.load_image_file(path)
+            locations = face_recognition.face_locations(img, model=self.config.detection_model)
+            if not locations:
+                logger.warning("No faces detected in %s", path)
+                return None
+            return face_recognition.face_encodings(
+                img, locations, num_jitters=self.config.num_jitters
+            )
+        except Exception as exc:
+            logger.error("Failed to encode %s: %s", path, exc)
+            return None
+
+    # ── Private: Recognition pipeline ────────────────────────────────────────
+
+    def _run_recognition(self, frame: np.ndarray) -> List[FaceMatch]:
+        sf = self.config.scale_factor
+        small = cv2.resize(frame, (0, 0), fx=sf, fy=sf)
+        rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+        locations = face_recognition.face_locations(
+            rgb,
+            number_of_times_to_upsample=self.config.upsample_times,
+            model=self.config.detection_model,
+        )
+        if not locations:
+            return []
+
+        encodings = face_recognition.face_encodings(
+            rgb, locations, num_jitters=self.config.num_jitters
+        )
+
+        known_encs, known_names = self.database.get_all()
+        results: List[FaceMatch] = []
+
+        for enc, loc in zip(encodings, locations):
+            name, conf = self._match(enc, known_encs, known_names)
+            # Scale location back to original resolution
+            inv = 1.0 / sf
+            scaled = tuple(int(v * inv) for v in loc)
+            results.append(FaceMatch(name=name, confidence=conf, location=scaled))
+
+        return results
+
+    def _match(
+        self,
+        encoding: np.ndarray,
+        known_encs: List[np.ndarray],
+        known_names: List[str],
+    ) -> Tuple[str, float]:
+        if not known_encs:
+            return "Unknown", 0.0
+
+        distances = face_recognition.face_distance(known_encs, encoding)
+        best_idx  = int(np.argmin(distances))
+        best_dist = float(distances[best_idx])
+        confidence = max(0.0, 1.0 - best_dist)
+
+        if best_dist <= self.config.tolerance:
+            return known_names[best_idx], confidence
+        return "Unknown", confidence
+
+    # ── Private: Drawing ──────────────────────────────────────────────────────
+
+    def _face_color(self, match: FaceMatch) -> Tuple[int, int, int]:
+        if not match.is_known:
+            return self.config.COLOR_UNKNOWN
+        if match.confidence >= self.config.HIGH_CONFIDENCE:
+            return self.config.COLOR_KNOWN_HIGH
+        return self.config.COLOR_KNOWN_MED
+
+    def _draw(self, frame: np.ndarray, matches: List[FaceMatch]) -> np.ndarray:
+        for m in matches:
+            color = self._face_color(m)
+            left, top, right, bottom = m.box
+
+            # Lightweight corner-style bounding box
+            self._corner_rect(frame, left, top, right, bottom, color)
+
+            # Label pill
+            label = m.label
+            (tw, th), bl = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_DUPLEX, 0.65, 1
+            )
+            pad = 6
+            ly = max(top - 14, th + pad * 2)
+            cv2.rectangle(
+                frame,
+                (left, ly - th - pad),
+                (left + tw + pad * 2, ly + bl),
+                color, -1,
+            )
+            cv2.putText(
+                frame, label,
+                (left + pad, ly - 2),
+                cv2.FONT_HERSHEY_DUPLEX, 0.65, (10, 10, 10), 1, cv2.LINE_AA,
+            )
+        return frame
+
+    def _corner_rect(
+        self,
+        frame: np.ndarray,
+        l: int, t: int, r: int, b: int,
+        color: Tuple[int, int, int],
+        arm: int = 22,
+        thick: int = 2,
+    ) -> None:
+        """Draw a corner-style rectangle (stylish alternative to plain rect)."""
+        cv2.rectangle(frame, (l, t), (r, b), color, 1)
+        for (x0, y0), (dx, dy) in [
+            ((l, t), (arm, 0)), ((l, t), (0, arm)),
+            ((r, t), (-arm, 0)), ((r, t), (0, arm)),
+            ((l, b), (arm, 0)), ((l, b), (0, -arm)),
+            ((r, b), (-arm, 0)), ((r, b), (0, -arm)),
+        ]:
+            cv2.line(frame, (x0, y0), (x0 + dx, y0 + dy), color, thick, cv2.LINE_AA)
+
+    def _draw_hud(self, frame: np.ndarray) -> np.ndarray:
+        """Overlay: top bar with FPS / face count / DB info."""
+        h, w = frame.shape[:2]
+
+        # Semi-transparent top bar
+        bar = frame.copy()
+        cv2.rectangle(bar, (0, 0), (w, 48), (10, 10, 10), -1)
+        cv2.addWeighted(bar, 0.55, frame, 0.45, 0, frame)
+
+        def put(text: str, x: int, color=(220, 220, 220)):
+            cv2.putText(frame, text, (x, 32), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65, color, 1, cv2.LINE_AA)
+
+        put(f"FPS  {self._fps.fps:5.1f}", 12, self.config.COLOR_HUD)
+        put(f"│  Faces  {len(self._cached)}", 130)
+        put(f"│  DB  {self.database.identity_count} id / {self.database.total_encodings} enc", 290)
+
+        # Bottom hint bar
+        hint = "  Q quit   E enroll   I image-enroll   L list   R remove   S screenshot  "
+        (hw, hh), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        hint_bar = frame.copy()
+        cv2.rectangle(hint_bar, (0, h - hh - 14), (w, h), (10, 10, 10), -1)
+        cv2.addWeighted(hint_bar, 0.55, frame, 0.45, 0, frame)
+        cv2.putText(frame, hint, (4, h - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1, cv2.LINE_AA)
+
+        return frame

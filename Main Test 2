@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""
+Real-Time Face Recognition System
+===================================
+Entry point.  Run with:
+
+    python main.py run              ← start live recognition
+    python main.py enroll Alice     ← webcam enrollment (also available in-app)
+    python main.py enroll Alice --image photo.jpg
+    python main.py list
+    python main.py remove Alice
+"""
+
+import argparse
+import sys
+import logging
+
+import cv2
+
+from src.config     import Config
+from src.database   import FaceDatabase
+from src.recognizer import FaceRecognizer
+from src.camera     import Camera
+from src.enrollment import EnrollmentSession
+from src.utils      import (
+    setup_logging, print_banner, print_controls,
+    print_identities, prompt, console,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_config(args: argparse.Namespace) -> Config:
+    cfg = Config()
+    if hasattr(args, "camera"):    cfg.camera_index     = args.camera
+    if hasattr(args, "model"):     cfg.detection_model  = args.model
+    if hasattr(args, "tolerance"): cfg.tolerance        = args.tolerance
+    if hasattr(args, "width"):     cfg.frame_width      = args.width
+    if hasattr(args, "height"):    cfg.frame_height     = args.height
+    return cfg
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def cmd_run(args: argparse.Namespace) -> None:
+    """Live recognition loop."""
+    cfg = _build_config(args)
+    db  = FaceDatabase(cfg.data_dir, cfg.encodings_file)
+    rec = FaceRecognizer(cfg, db)
+
+    if db.identity_count == 0:
+        console.print(
+            "[yellow]⚠  Database is empty – faces will appear as 'Unknown'.\n"
+            "   Press [bold]E[/bold] inside the window to enroll.[/yellow]\n"
+        )
+
+    print_controls()
+
+    with Camera(cfg.camera_index, cfg.frame_width, cfg.frame_height, cfg.target_fps) as cam:
+        if not cam.open():
+            console.print("[red]✗  Failed to open camera.[/red]")
+            return
+
+        console.print("[green]✓  Recognition started.[/green]")
+        cv2.namedWindow("Face Recognition", cv2.WINDOW_NORMAL)
+
+        enroll_session = None
+        screenshots    = cfg.data_dir / cfg.screenshots_dir
+
+        while True:
+            ok, frame = cam.read()
+            if not ok or frame is None:
+                logger.error("Frame capture failed.")
+                break
+
+            # ── Enrollment overlay ──────────────────────────────────────────
+            if enroll_session is not None:
+                frame = enroll_session.process_frame(frame)
+
+                if enroll_session.is_done:
+                    _finish_enrollment(enroll_session, rec, db)
+                    enroll_session = None
+            else:
+                frame, _ = rec.process_frame(frame)
+
+            cv2.imshow("Face Recognition", frame)
+
+            # ── Key handling ────────────────────────────────────────────────
+            key = cv2.waitKey(1) & 0xFF
+
+            if key in (ord("q"), 27):                 # Q / Esc → quit
+                break
+
+            elif key == ord("e"):                     # E → webcam enroll
+                name = prompt("Enter name to enroll:")
+                if name:
+                    enroll_session = EnrollmentSession(
+                        name, cfg.enrollment_samples, cfg.enrollment_countdown
+                    )
+                    console.print(f"[cyan]→ Enrolling '{name}' from webcam…[/cyan]")
+
+            elif key == ord("i"):                     # I → image enroll
+                name  = prompt("Name:")
+                ipath = prompt("Image path:")
+                if name and ipath:
+                    _enroll_from_image(name, ipath, rec, db)
+
+            elif key == ord("l"):                     # L → list
+                print_identities(db.list_identities())
+
+            elif key == ord("r"):                     # R → remove
+                name = prompt("Name to remove:")
+                if name:
+                    if db.remove(name):
+                        db.save()
+                        console.print(f"[green]✓  Removed '{name}'.[/green]")
+                    else:
+                        console.print(f"[red]✗  '{name}' not found.[/red]")
+
+            elif key == ord("s"):                     # S → screenshot
+                path = cam.screenshot(frame, screenshots)
+                if path:
+                    console.print(f"[green]✓  Screenshot → {path}[/green]")
+
+    cv2.destroyAllWindows()
+    console.print("[dim]Session ended.[/dim]")
+
+
+def _finish_enrollment(
+    session: EnrollmentSession,
+    rec: FaceRecognizer,
+    db: FaceDatabase,
+) -> None:
+    frames = session.captured_frames
+    console.print(f"[cyan]Processing {len(frames)} sample(s)…[/cyan]")
+    added = 0
+    for f in frames:
+        encs = rec.encode_from_frame(f)
+        if encs:
+            for enc in encs:
+                db.add_encoding(session.name, enc)
+                added += 1
+    if added:
+        db.save()
+        console.print(f"[green]✓  '{session.name}' enrolled with {added} encoding(s).[/green]")
+    else:
+        console.print(f"[red]✗  No faces detected during enrollment for '{session.name}'.[/red]")
+
+
+def _enroll_from_image(
+    name: str,
+    image_path: str,
+    rec: FaceRecognizer,
+    db: FaceDatabase,
+) -> None:
+    encs = rec.encode_from_file(image_path)
+    if not encs:
+        console.print(f"[red]✗  No faces found in '{image_path}'.[/red]")
+        return
+    for enc in encs:
+        db.add_encoding(name, enc)
+    db.save()
+    console.print(f"[green]✓  Enrolled '{name}' with {len(encs)} face(s) from image.[/green]")
+
+
+def cmd_enroll(args: argparse.Namespace) -> None:
+    """Enroll a face non-interactively from an image file."""
+    cfg = _build_config(args)
+    db  = FaceDatabase(cfg.data_dir, cfg.encodings_file)
+    rec = FaceRecognizer(cfg, db)
+
+    if args.image:
+        _enroll_from_image(args.name, args.image, rec, db)
+    else:
+        # Webcam enrollment (no GUI loop; capture a single frame)
+        console.print("[yellow]For webcam enrollment use 'run' and press E inside the window.[/yellow]")
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    cfg = _build_config(args)
+    db  = FaceDatabase(cfg.data_dir, cfg.encodings_file)
+    print_identities(db.list_identities())
+    console.print(
+        f"  [dim]{db.identity_count} identit(y/ies) · {db.total_encodings} encoding(s)[/dim]\n"
+    )
+
+
+def cmd_remove(args: argparse.Namespace) -> None:
+    cfg = _build_config(args)
+    db  = FaceDatabase(cfg.data_dir, cfg.encodings_file)
+    if db.remove(args.name):
+        db.save()
+        console.print(f"[green]✓  Removed '{args.name}'.[/green]")
+    else:
+        console.print(f"[red]✗  '{args.name}' not found.[/red]")
+        sys.exit(1)
+
+
+# ── CLI definition ────────────────────────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="facerec",
+        description="Real-Time Face Recognition System",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--log-level", default="WARNING",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity (default: WARNING)",
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    # run ─────────────────────────────────────────────────────────────────────
+    p_run = sub.add_parser("run", help="Start live recognition")
+    p_run.add_argument("--camera",    type=int,   default=0,      metavar="N",   help="Camera device index")
+    p_run.add_argument("--model",     default="hog", choices=["hog", "cnn"],     help="Detection model")
+    p_run.add_argument("--tolerance", type=float, default=0.50,   metavar="T",   help="Recognition tolerance 0-1")
+    p_run.add_argument("--width",     type=int,   default=1280,   metavar="PX",  help="Capture width")
+    p_run.add_argument("--height",    type=int,   default=720,    metavar="PX",  help="Capture height")
+
+    # enroll ──────────────────────────────────────────────────────────────────
+    p_enroll = sub.add_parser("enroll", help="Enroll a face from an image file")
+    p_enroll.add_argument("name",           help="Identity name")
+    p_enroll.add_argument("--image", "-i",  metavar="PATH",       help="Image file path (JPEG/PNG)")
+    p_enroll.add_argument("--model",        default="hog", choices=["hog", "cnn"])
+
+    # list ────────────────────────────────────────────────────────────────────
+    sub.add_parser("list", help="List enrolled identities")
+
+    # remove ──────────────────────────────────────────────────────────────────
+    p_remove = sub.add_parser("remove", help="Remove an identity from the database")
+    p_remove.add_argument("name", help="Identity name to delete")
+
+    return parser
+
+
+# ── Entry ─────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = build_parser()
+    args   = parser.parse_args()
+
+    setup_logging(args.log_level)
+    print_banner()
+
+    dispatch = {
+        "run":    cmd_run,
+        "enroll": cmd_enroll,
+        "list":   cmd_list,
+        "remove": cmd_remove,
+    }
+
+    if args.command is None:
+        parser.print_help()
+        return
+
+    dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

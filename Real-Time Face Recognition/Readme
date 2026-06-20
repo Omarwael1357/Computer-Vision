@@ -1,0 +1,134 @@
+# Real-Time Face Recognition System
+
+A production-quality real-time face recognition application built on
+**face_recognition** (dlib) and **OpenCV**, with a clean CLI and
+interactive webcam enrollment.
+
+---
+
+## Features
+
+| Feature | Details |
+|---|---|
+| Live recognition | Webcam stream annotated in real time |
+| Multi-face | Detects and recognises any number of faces per frame |
+| Confidence scores | Visual indicator (green → cyan → red) |
+| Enrollment | Via webcam (5 samples) or static image |
+| CLI | `run` · `enroll` · `list` · `remove` |
+| In-app hotkeys | `E` enroll · `I` image-enroll · `L` list · `R` remove · `S` screenshot |
+| Persistence | Pickle database, survives restarts |
+| Frame skipping | Configurable – keeps display smooth on CPU-only machines |
+| Downscaling | Optional 0.5× pre-scale for faster detection |
+
+---
+
+## Requirements
+
+```
+Python 3.9+
+cmake, dlib build tools
+```
+
+### macOS
+```bash
+brew install cmake dlib
+```
+
+### Ubuntu / Debian
+```bash
+sudo apt update && sudo apt install -y cmake libopenblas-dev liblapack-dev libx11-dev
+```
+
+### Windows
+Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ workload), then:
+```
+pip install cmake dlib
+```
+
+---
+
+## Installation
+
+```bash
+git clone <repo-url>
+cd face_recognition_system
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Start live recognition (press E to enroll the first person)
+python main.py run
+
+# 2. Enroll from a photo
+python main.py enroll "Alice" --image alice.jpg
+
+# 3. Check who is enrolled
+python main.py list
+
+# 4. Remove someone
+python main.py remove "Alice"
+```
+
+---
+
+## Live Controls
+
+| Key | Action |
+|---|---|
+| `Q` / `Esc` | Quit |
+| `E` | Enroll new face via webcam |
+| `I` | Enroll from image file |
+| `L` | List database in terminal |
+| `R` | Remove identity |
+| `S` | Save screenshot |
+
+---
+
+## Configuration
+
+Edit `src/config.py` to tune:
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `tolerance` | `0.50` | Lower = stricter matching |
+| `detection_model` | `"hog"` | `"cnn"` is more accurate (needs GPU) |
+| `scale_factor` | `0.50` | Smaller = faster, misses small faces |
+| `frame_skip` | `2` | Recognise every Nth frame |
+| `enrollment_samples` | `5` | Samples collected during webcam enroll |
+
+---
+
+## Project Layout
+
+```
+face_recognition_system/
+├── main.py               ← Entry point + CLI
+├── requirements.txt
+├── README.md
+└── src/
+    ├── config.py         ← All tunable parameters
+    ├── database.py       ← Pickle-based face store
+    ├── recognizer.py     ← Detection · matching · drawing
+    ├── camera.py         ← OpenCV capture wrapper
+    ├── enrollment.py     ← Webcam enrollment state machine
+    └── utils.py          ← Rich terminal helpers
+```
+
+---
+
+## Performance Tips
+
+- Use `--model hog` (default) on CPU; switch to `--model cnn` with a CUDA GPU.
+- Lower `scale_factor` to `0.25` and raise `frame_skip` to `3–4` on slow hardware.
+- Increase `enrollment_samples` (10–15) and `num_jitters` (5–10) for better accuracy.
+
+---
+
+## License
+
+MIT
